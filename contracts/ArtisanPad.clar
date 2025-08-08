@@ -1,5 +1,6 @@
 ;; ArtisanPad - Digital Art Provenance & Marketplace
 ;; A comprehensive platform for digital art creation, verification, and trading
+;; Now with Multi-Edition NFT support
 
 ;; Constants
 (define-constant contract-owner tx-sender)
@@ -11,9 +12,14 @@
 (define-constant err-invalid-royalty (err u105))
 (define-constant err-already-exists (err u106))
 (define-constant err-invalid-input (err u107))
+(define-constant err-edition-sold-out (err u108))
+(define-constant err-invalid-edition-size (err u109))
+(define-constant err-edition-not-found (err u110))
+(define-constant err-invalid-edition-number (err u111))
 
 ;; Data Variables
 (define-data-var next-artwork-id uint u1)
+(define-data-var next-edition-id uint u1)
 (define-data-var platform-fee-percentage uint u250) ;; 2.5%
 
 ;; Data Maps
@@ -29,7 +35,36 @@
     for-sale: bool,
     royalty-percentage: uint,
     created-at: uint,
-    last-sale-price: uint
+    last-sale-price: uint,
+    is-edition: bool,
+    edition-id: (optional uint)
+  }
+)
+
+(define-map editions
+  uint
+  {
+    title: (string-ascii 100),
+    description: (string-ascii 500),
+    image-hash: (string-ascii 64),
+    creator: principal,
+    total-supply: uint,
+    minted-count: uint,
+    price-per-edition: uint,
+    royalty-percentage: uint,
+    created-at: uint,
+    active: bool
+  }
+)
+
+(define-map edition-tokens
+  {edition-id: uint, token-number: uint}
+  {
+    owner: principal,
+    artwork-id: uint,
+    minted-at: uint,
+    for-sale: bool,
+    sale-price: uint
   }
 )
 
@@ -40,7 +75,8 @@
     bio: (string-ascii 200),
     verified: bool,
     total-artworks: uint,
-    total-sales: uint
+    total-sales: uint,
+    total-editions: uint
   }
 )
 
@@ -76,12 +112,13 @@
       bio: bio,
       verified: false,
       total-artworks: u0,
-      total-sales: u0
+      total-sales: u0,
+      total-editions: u0
     }))
   )
 )
 
-;; Create new artwork
+;; Create new single artwork
 (define-public (create-artwork 
   (title (string-ascii 100))
   (description (string-ascii 500))
@@ -112,7 +149,9 @@
       for-sale: (> price u0),
       royalty-percentage: royalty-percentage,
       created-at: current-block,
-      last-sale-price: u0
+      last-sale-price: u0,
+      is-edition: false,
+      edition-id: none
     })
     
     ;; Add to creator's collection
@@ -130,7 +169,8 @@
         bio: "",
         verified: false,
         total-artworks: u1,
-        total-sales: u0
+        total-sales: u0,
+        total-editions: u0
       })
     )
     
@@ -140,7 +180,153 @@
   )
 )
 
-;; Purchase artwork
+;; Create new limited edition series
+(define-public (create-edition
+  (title (string-ascii 100))
+  (description (string-ascii 500))
+  (image-hash (string-ascii 64))
+  (total-supply uint)
+  (price-per-edition uint)
+  (royalty-percentage uint)
+)
+  (let
+    (
+      (edition-id (var-get next-edition-id))
+      (creator tx-sender)
+      (current-block stacks-block-height)
+    )
+    (asserts! (> (len title) u0) err-invalid-input)
+    (asserts! (> (len description) u0) err-invalid-input)
+    (asserts! (> (len image-hash) u0) err-invalid-input)
+    (asserts! (and (> total-supply u0) (<= total-supply u10000)) err-invalid-edition-size)
+    (asserts! (> price-per-edition u0) err-invalid-price)
+    (asserts! (<= royalty-percentage u1000) err-invalid-royalty)
+    
+    ;; Create edition
+    (map-set editions edition-id {
+      title: title,
+      description: description,
+      image-hash: image-hash,
+      creator: creator,
+      total-supply: total-supply,
+      minted-count: u0,
+      price-per-edition: price-per-edition,
+      royalty-percentage: royalty-percentage,
+      created-at: current-block,
+      active: true
+    })
+    
+    ;; Update artist profile
+    (match (map-get? artist-profiles creator)
+      artist-profile
+      (map-set artist-profiles creator (merge artist-profile {
+        total-editions: (+ (get total-editions artist-profile) u1)
+      }))
+      ;; Create default profile if none exists
+      (map-set artist-profiles creator {
+        name: "",
+        bio: "",
+        verified: false,
+        total-artworks: u0,
+        total-sales: u0,
+        total-editions: u1
+      })
+    )
+    
+    ;; Increment edition counter
+    (var-set next-edition-id (+ edition-id u1))
+    (ok edition-id)
+  )
+)
+
+;; Mint edition token
+(define-public (mint-edition-token (edition-id uint))
+  (let
+    (
+      (edition-data (unwrap! (map-get? editions edition-id) err-edition-not-found))
+      (minter tx-sender)
+      (current-minted (get minted-count edition-data))
+      (total-supply (get total-supply edition-data))
+      (price (get price-per-edition edition-data))
+      (creator (get creator edition-data))
+      (token-number (+ current-minted u1))
+      (artwork-id (var-get next-artwork-id))
+      (current-block stacks-block-height)
+      (platform-fee (/ (* price (var-get platform-fee-percentage)) u10000))
+      (creator-amount (- price platform-fee))
+    )
+    
+    (asserts! (get active edition-data) err-edition-sold-out)
+    (asserts! (< current-minted total-supply) err-edition-sold-out)
+    
+    ;; Transfer payment to creator (minus platform fee)
+    (try! (stx-transfer? creator-amount minter creator))
+    
+    ;; Transfer platform fee to contract owner
+    (try! (stx-transfer? platform-fee minter contract-owner))
+    
+    ;; Create edition token record
+    (map-set edition-tokens 
+      {edition-id: edition-id, token-number: token-number}
+      {
+        owner: minter,
+        artwork-id: artwork-id,
+        minted-at: current-block,
+        for-sale: false,
+        sale-price: u0
+      }
+    )
+    
+    ;; Create corresponding artwork
+    (map-set artworks artwork-id {
+      title: (get title edition-data),
+      description: (get description edition-data),
+      image-hash: (get image-hash edition-data),
+      creator: creator,
+      owner: minter,
+      price: u0,
+      for-sale: false,
+      royalty-percentage: (get royalty-percentage edition-data),
+      created-at: current-block,
+      last-sale-price: u0,
+      is-edition: true,
+      edition-id: (some edition-id)
+    })
+    
+    ;; Add to minter's collection
+    (map-set user-collections {user: minter, artwork-id: artwork-id} true)
+    
+    ;; Update edition minted count
+    (map-set editions edition-id (merge edition-data {
+      minted-count: token-number
+    }))
+    
+    ;; Update creator's profile
+    (match (map-get? artist-profiles creator)
+      creator-profile
+      (map-set artist-profiles creator (merge creator-profile {
+        total-sales: (+ (get total-sales creator-profile) u1)
+      }))
+      true
+    )
+    
+    ;; Increment artwork counter
+    (var-set next-artwork-id (+ artwork-id u1))
+    
+    ;; Check if edition is now sold out
+    (if (is-eq token-number total-supply)
+      (map-set editions edition-id (merge edition-data {
+        minted-count: token-number,
+        active: false
+      }))
+      true
+    )
+    
+    (ok {edition-id: edition-id, token-number: token-number, artwork-id: artwork-id})
+  )
+)
+
+;; Purchase regular artwork
 (define-public (purchase-artwork (artwork-id uint))
   (let
     (
@@ -260,6 +446,16 @@
   (map-get? artworks artwork-id)
 )
 
+;; Get edition details
+(define-read-only (get-edition (edition-id uint))
+  (map-get? editions edition-id)
+)
+
+;; Get edition token details
+(define-read-only (get-edition-token (edition-id uint) (token-number uint))
+  (map-get? edition-tokens {edition-id: edition-id, token-number: token-number})
+)
+
 ;; Get artist profile
 (define-read-only (get-artist-profile (artist principal))
   (map-get? artist-profiles artist)
@@ -280,6 +476,11 @@
   (var-get next-artwork-id)
 )
 
+;; Get next edition ID
+(define-read-only (get-next-edition-id)
+  (var-get next-edition-id)
+)
+
 ;; Get platform fee
 (define-read-only (get-platform-fee)
   (var-get platform-fee-percentage)
@@ -288,4 +489,19 @@
 ;; Get contract owner
 (define-read-only (get-contract-owner)
   contract-owner
+)
+
+;; Calculate rarity percentage for edition token
+(define-read-only (get-edition-rarity (edition-id uint) (token-number uint))
+  (match (map-get? editions edition-id)
+    edition-data
+    (let
+      (
+        (total-supply (get total-supply edition-data))
+        (rarity-score (/ (* u10000 token-number) total-supply))
+      )
+      (some rarity-score)
+    )
+    none
+  )
 )
