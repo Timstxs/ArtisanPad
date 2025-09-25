@@ -4,13 +4,14 @@ A comprehensive digital art provenance and marketplace platform built on the Sta
 
 ## Overview
 
-ArtisanPad revolutionizes the digital art industry by providing a secure, transparent, and decentralized platform for artists to mint, verify, and trade their digital artworks. The platform ensures authentic provenance tracking, fair royalty distribution, and seamless marketplace functionality with support for both unique artworks and limited edition collections.
+ArtisanPad revolutionizes the digital art industry by providing a secure, transparent, and decentralized platform for artists to mint, verify, and trade their digital artworks. The platform ensures authentic provenance tracking, fair royalty distribution, and seamless marketplace functionality with support for both unique artworks, limited edition collections, and time-based auctions.
 
 ## Features
 
 ### Core Functionality
 - **Digital Art Minting**: Artists can create and mint their digital artworks with metadata
 - **Multi-Edition NFTs**: Support for limited edition artworks with sequential minting and rarity tracking
+- **Auction System**: Time-based bidding mechanism with automatic settlement and reserve prices
 - **Provenance Tracking**: Complete ownership history and transaction records
 - **Artist Verification**: Verified artist profiles for enhanced credibility
 - **Marketplace Integration**: Built-in buying and selling functionality
@@ -25,6 +26,15 @@ ArtisanPad revolutionizes the digital art industry by providing a secure, transp
 - **Error Handling**: Comprehensive error handling and validation
 - **Gas Optimization**: Efficient contract design for minimal transaction costs
 - **Edition Management**: Automatic sold-out tracking and supply limits
+- **Auction Management**: Automated bid handling, settlement, and refunds
+
+### Auction System Features
+- **Timed Auctions**: Configurable auction duration (1-30 days)
+- **Reserve Prices**: Minimum sale price protection for sellers
+- **Automatic Bidding**: Real-time bid validation and outbid notifications
+- **Automatic Settlement**: Smart contract handles payment distribution
+- **Bid Refunds**: Automatic refund system for outbid participants
+- **Auction Cancellation**: Cancel auctions with no bids placed
 
 ## Technical Architecture
 
@@ -35,6 +45,8 @@ ArtisanPad Contract
 │   ├── artworks (artwork metadata and ownership)
 │   ├── editions (limited edition series data)
 │   ├── edition-tokens (individual edition token tracking)
+│   ├── auctions (auction data and status)
+│   ├── auction-bids (bid tracking and amounts)
 │   ├── artist-profiles (artist information and stats)
 │   ├── artwork-provenance (transaction history)
 │   └── user-collections (ownership tracking)
@@ -43,7 +55,11 @@ ArtisanPad Contract
 │   ├── create-artwork (single NFTs)
 │   ├── create-edition (limited edition series)
 │   ├── mint-edition-token
-│   ├── purchase-artwork
+│   ├── create-auction (start timed auction)
+│   ├── place-bid (participate in auctions)
+│   ├── settle-auction (finalize completed auctions)
+│   ├── cancel-auction (cancel auctions with no bids)
+│   ├── purchase-artwork (direct purchase)
 │   ├── list-artwork-for-sale
 │   ├── remove-artwork-from-sale
 │   └── verify-artist
@@ -51,6 +67,10 @@ ArtisanPad Contract
     ├── get-artwork
     ├── get-edition
     ├── get-edition-token
+    ├── get-auction
+    ├── get-auction-bid
+    ├── is-auction-active
+    ├── can-settle-auction
     ├── get-artist-profile
     ├── get-artwork-provenance
     ├── get-edition-rarity
@@ -77,6 +97,13 @@ ArtisanPad Contract
 - Individual token ownership and metadata
 - Minting timestamp and artwork linking
 - Secondary market sale tracking
+
+**Auction Data Structure:**
+- Artwork ID and seller information
+- Start price and reserve price settings
+- Current bid and highest bidder tracking
+- Start and end block timestamps
+- Settlement status and activity flags
 
 **Artist Profile Structure:**
 - Name, biography, and verification status
@@ -143,7 +170,16 @@ ArtisanPad Contract
      u750)    ;; 7.5% royalty
    ```
 
-4. **List for Sale:**
+4. **Start an Auction:**
+   ```clarity
+   (contract-call? .artisan-pad create-auction
+     u1       ;; Artwork ID
+     u500000  ;; Starting price in microSTX
+     u1000000 ;; Reserve price in microSTX
+     u1440)   ;; Duration in blocks (10 days)
+   ```
+
+5. **List for Sale:**
    ```clarity
    (contract-call? .artisan-pad list-artwork-for-sale u1 u2000000)
    ```
@@ -160,14 +196,24 @@ ArtisanPad Contract
    (contract-call? .artisan-pad mint-edition-token u1)
    ```
 
-3. **Check Ownership:**
+3. **Place Auction Bid:**
+   ```clarity
+   (contract-call? .artisan-pad place-bid u1 u750000)
+   ```
+
+4. **Settle Completed Auction:**
+   ```clarity
+   (contract-call? .artisan-pad settle-auction u1)
+   ```
+
+5. **Check Ownership:**
    ```clarity
    (contract-call? .artisan-pad owns-artwork tx-sender u1)
    ```
 
-4. **Check Edition Rarity:**
+6. **Check Auction Status:**
    ```clarity
-   (contract-call? .artisan-pad get-edition-rarity u1 u25)
+   (contract-call? .artisan-pad is-auction-active u1)
    ```
 
 ## Contract Functions
@@ -177,6 +223,10 @@ ArtisanPad Contract
 - `create-artwork`: Mint a new single digital artwork
 - `create-edition`: Create a new limited edition series
 - `mint-edition-token`: Mint an individual token from an edition series
+- `create-auction`: Start a timed auction for an artwork
+- `place-bid`: Place a bid on an active auction
+- `settle-auction`: Finalize a completed auction and transfer ownership
+- `cancel-auction`: Cancel an auction with no bids placed
 - `purchase-artwork`: Buy an artwork from another user
 - `list-artwork-for-sale`: Put artwork up for sale
 - `remove-artwork-from-sale`: Remove artwork from marketplace
@@ -186,12 +236,44 @@ ArtisanPad Contract
 - `get-artwork`: Retrieve artwork details
 - `get-edition`: Get edition series information
 - `get-edition-token`: Get specific edition token details
+- `get-auction`: Get auction details and current status
+- `get-auction-bid`: Get bid amount for specific bidder
+- `is-auction-active`: Check if auction is currently accepting bids
+- `can-settle-auction`: Check if auction can be settled
 - `get-artist-profile`: Get artist profile information
 - `get-artwork-provenance`: View transaction history
 - `get-edition-rarity`: Calculate rarity score for edition tokens
 - `owns-artwork`: Check artwork ownership
 - `get-next-artwork-id`: Get next available artwork ID
 - `get-next-edition-id`: Get next available edition ID
+- `get-next-auction-id`: Get next available auction ID
+
+## Auction System
+
+### How Auctions Work
+
+1. **Creation**: Artwork owners can create timed auctions with configurable duration (1-30 days)
+2. **Bidding**: Users place bids that must exceed the current highest bid and starting price
+3. **Automatic Refunds**: Previous highest bidders are automatically refunded when outbid
+4. **Reserve Protection**: Auctions only complete if the final bid meets the reserve price
+5. **Settlement**: Anyone can settle completed auctions, triggering automatic payment distribution
+6. **Fee Distribution**: Platform fees and royalties are automatically calculated and distributed
+
+### Auction Parameters
+
+- **Duration**: 144 blocks (1 day) to 4,320 blocks (30 days)
+- **Starting Price**: Minimum bid amount to participate
+- **Reserve Price**: Minimum price for successful auction completion
+- **Bid Increments**: Each bid must exceed the current highest bid
+- **Settlement Window**: Auctions can be settled immediately after end time
+
+### Security Features
+
+- **Ownership Verification**: Only artwork owners can create auctions
+- **Bid Validation**: All bids are validated for amount and timing
+- **Automatic Escrow**: Contract holds all funds until settlement
+- **Refund Protection**: Guaranteed refunds for outbid participants
+- **Double Settlement Prevention**: Auctions can only be settled once
 
 ## Multi-Edition NFT Features
 
@@ -223,12 +305,14 @@ ArtisanPad Contract
 - **Reentrancy Protection**: Safe transaction handling
 - **Data Integrity**: Immutable provenance records
 - **Supply Limits**: Edition size constraints prevent overselling
+- **Auction Security**: Automated bid validation and settlement protection
 
 ## Economic Model
 
 - **Platform Fee**: 2.5% of each transaction
 - **Royalty System**: Configurable royalties (0-10%) for original creators
 - **Edition Pricing**: Flexible pricing per edition token
+- **Auction Fees**: Same fee structure applied to auction settlements
 - **Gas Optimization**: Efficient contract design for minimal costs
 - **Sustainable Revenue**: Platform fees support ongoing development
 
@@ -246,6 +330,14 @@ ArtisanPad Contract
 - `u109`: Invalid edition size
 - `u110`: Edition not found
 - `u111`: Invalid edition number
+- `u112`: Auction not found
+- `u113`: Auction not active
+- `u114`: Bid too low
+- `u115`: Auction ended
+- `u116`: Auction not ended
+- `u117`: No bids placed
+- `u118`: Auction already settled
+- `u119`: Invalid auction duration
 
 ## Roadmap
 
@@ -253,7 +345,7 @@ ArtisanPad is continuously evolving to become the most comprehensive digital art
 
 ### 🎯 Phase 1 - Core Enhancements (Current)
 - ✅ **Multi-Edition NFTs**: Support for limited edition artworks with sequential minting and rarity tracking
-- 🔄 **Auction System**: Time-based bidding mechanism with automatic settlement and reserve prices
+- ✅ **Auction System**: Time-based bidding mechanism with automatic settlement and reserve prices
 - 🔄 **Collaborative Artworks**: Multi-artist collaboration support with split ownership and revenue sharing
 
 ### 🚀 Phase 2 - Advanced Features (Q3-Q4 2025)
